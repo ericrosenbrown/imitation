@@ -78,6 +78,11 @@ def seals_mountain_car():
 
 
 @train_preference_comparisons_ex.named_config
+def seals_half_cheetah():
+    common = dict(env_name="seals/HalfCheetah-v0")
+
+
+@train_preference_comparisons_ex.named_config
 def seals_ant():
     common = dict(env_name="seals/Ant-v0")
 
