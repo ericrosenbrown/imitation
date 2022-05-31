@@ -21,18 +21,28 @@ logger = logging.getLogger(__name__)
 
 @rl_ingredient.config
 def config():
-    rl_cls = stable_baselines3.PPO
-    batch_size = 2048  # batch size for RL algorithm
-    rl_kwargs = dict(
-        # For recommended PPO hyperparams in each environment, see:
-        # https://github.com/DLR-RM/rl-baselines3-zoo/blob/master/hyperparams/ppo.yml
-        # Default HPs are as follows:
-        # learning_rate=3e-4,
-        # batch_size=64,
-        # n_epochs=10,
-        # ent_coef=0.0,
-    )
+    rl_cls = None
+    batch_size = None
+    rl_kwargs = dict()
     locals()  # quieten flake8
+
+
+@rl_ingredient.config_hook
+def config_hook(config, command_name, logger):
+    """Sets defaults equivalent to stable_baselines3.PPO default hyperparameters."""
+    del command_name, logger
+    res = {}
+    if config["rl"]["rl_cls"] is None:
+        default_rl = stable_baselines3.PPO
+        res["rl_cls"] = default_rl
+        res["batch_size"] = 2048  # rl_kwargs["n_steps"] = batch_size // venv.num_envs
+        res["rl_kwargs"] = dict(
+            learning_rate=3e-4,
+            batch_size=64,
+            n_epochs=10,
+            ent_coef=0.0,
+        )
+    return res
 
 
 @rl_ingredient.named_config
@@ -41,6 +51,25 @@ def fast():
     # SB3 RL seems to need batch size of 2, otherwise it runs into numeric
     # issues when computing multinomial distribution during predict()
     # rl_kwargs = dict(batch_size=2)
+    locals()  # quieten flake8
+
+
+@rl_ingredient.named_config
+def ppo():
+    # For recommended PPO hyperparams in each environment, see:
+    # https://github.com/DLR-RM/rl-baselines3-zoo/blob/master/hyperparams/ppo.yml
+    rl_cls = stable_baselines3.PPO
+    locals()  # quieten flake8
+
+
+@rl_ingredient.named_config
+def sac():
+    # For recommended SAC hyperparams in each environment, see:
+    # https://github.com/DLR-RM/rl-baselines3-zoo/blob/master/hyperparams/sac.yml
+    rl_cls = stable_baselines3.SAC
+    # Default HPs are as follows:
+    batch_size = 256  # batch size for RL algorithm
+    rl_kwargs = dict()
     locals()  # quieten flake8
 
 
@@ -92,9 +121,12 @@ def make_rl_algo(
         raise TypeError(f"Unsupported RL algorithm '{rl_cls}'")
     rl_algo = rl_cls(
         policy=train["policy_cls"],
-        # stable_baselines3.common.OffPolicyAlgorithm updated ReadOnlyDict from Sacred config in the following
-        # https://github.com/DLR-RM/stable-baselines3/blob/a6f5049a99a4c21a6f0bcce458ca3306cef310e0/stable_baselines3/common/off_policy_algorithm.py#L142
-        policy_kwargs=deepcopy(train["policy_kwargs"]),
+        # Note(yawen): Here we make a copy of policy_kwargs as a temporary workaround
+        # for possible changing configs in a captured function. For off-policy
+        # algorithms in SB3, policy_kwargs["use_sde"] could be changed in
+        # rl_cls.__init__() for certain algorithms, such as Soft Actor Critic.
+        # https://github.com/DLR-RM/stable-baselines3/blob/master/stable_baselines3/common/off_policy_algorithm.py#L142
+        policy_kwargs=dict(train["policy_kwargs"]),
         env=venv,
         seed=_seed,
         **rl_kwargs,

@@ -5,6 +5,7 @@ from typing import Any, Mapping, Union
 
 import sacred
 from stable_baselines3.common import base_class, policies, torch_layers, vec_env
+from stable_baselines3.sac.policies import SACPolicy
 
 import imitation.util.networks
 from imitation.data import rollout
@@ -29,6 +30,13 @@ def config():
 @train_ingredient.named_config
 def fast():
     n_episodes_eval = 1
+    locals()  # quieten flake8
+
+
+@train_ingredient.named_config
+def sac():
+    policy_cls = SACPolicy
+
     locals()  # quieten flake8
 
 

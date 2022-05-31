@@ -36,7 +36,7 @@ done
 DOCKER_IMAGE="humancompatibleai/imitation:python-req"
 # Specify LOCAL_MNT if you want to mount a local directory to the docker container
 if [[ ${LOCAL_MNT} == "" ]]; then
-  LOCAL_MNT="${HOME}/imitation"
+  LOCAL_MNT="${HOME}"
 fi
 
 # Pass your own mjkey.txt
@@ -53,8 +53,9 @@ if [[ $PULL == 1 ]]; then
   docker pull ${DOCKER_IMAGE}
 fi
 
-docker run -it --rm --init --name imit \
-  -v "${LOCAL_MNT}:/imitation" \
+
+docker run -it --rm --init \
+  -v "${LOCAL_MNT}/imitation:/imitation" \
   -v "${MJKEY_MNT}:/root/.mujoco/mjkey.txt" \
   ${DOCKER_IMAGE} \
   /bin/bash -c "${CMD} && exec bash"
