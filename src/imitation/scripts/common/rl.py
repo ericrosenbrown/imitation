@@ -50,7 +50,7 @@ def fast():
     batch_size = 2
     # SB3 RL seems to need batch size of 2, otherwise it runs into numeric
     # issues when computing multinomial distribution during predict()
-    # rl_kwargs = dict(batch_size=2)
+    rl_kwargs = dict(batch_size=2)
     locals()  # quieten flake8
 
 
@@ -69,7 +69,7 @@ def sac():
     rl_cls = stable_baselines3.SAC
     # Default HPs are as follows:
     batch_size = 256  # batch size for RL algorithm
-    rl_kwargs = dict()
+    rl_kwargs = dict(batch_size=None)
     locals()  # quieten flake8
 
 
@@ -115,7 +115,8 @@ def make_rl_algo(
         ), "set 'n_steps' at top-level using 'batch_size'"
         rl_kwargs["n_steps"] = batch_size // venv.num_envs
     elif issubclass(rl_cls, off_policy_algorithm.OffPolicyAlgorithm):
-        assert "batch_size" not in rl_kwargs, "set 'batch_size' at top-level"
+        if "batch_size" not in rl_kwargs or rl_kwargs["batch_size"] is not None:
+            raise ValueError("set 'batch_size' at top-level")
         rl_kwargs["batch_size"] = batch_size
     else:
         raise TypeError(f"Unsupported RL algorithm '{rl_cls}'")

@@ -78,11 +78,6 @@ def seals_mountain_car():
 
 
 @train_preference_comparisons_ex.named_config
-def reacher():
-    common = dict(env_name="Reacher-v2")
-
-
-@train_preference_comparisons_ex.named_config
 def seals_ant():
     common = dict(env_name="seals/Ant-v0")
 
