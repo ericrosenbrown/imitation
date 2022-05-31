@@ -11,7 +11,6 @@ from stable_baselines3.common import (
     on_policy_algorithm,
     vec_env,
 )
-from copy import deepcopy
 
 from imitation.scripts.common.train import train_ingredient
 
