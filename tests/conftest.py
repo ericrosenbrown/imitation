@@ -3,7 +3,7 @@ import os
 import pickle
 import traceback
 import warnings
-from typing import Callable, Optional, Sequence
+from typing import Callable, Sequence
 
 import gym
 import pytest
@@ -82,7 +82,9 @@ def cartpole_venv(request) -> VecEnv:
 
 @pytest.fixture
 def cartpole_expert_policy():
-    return PPO.load(load_from_hub(f"ernestumorga/ppo-seals-CartPole-v0", "ppo-seals/CartPole-v0.zip")).policy
+    return PPO.load(
+        load_from_hub("ernestumorga/ppo-seals-CartPole-v0", "ppo-seals/CartPole-v0.zip")
+    ).policy
 
 
 @pytest.fixture
@@ -111,7 +113,9 @@ def pendulum_venv() -> VecEnv:
 
 @pytest.fixture
 def pendulum_expert_policy() -> BasePolicy:
-    return PPO.load(load_from_hub(f"ernestumorga/ppo-Pendulum-v1", "ppo-Pendulum-v1.zip")).policy
+    return PPO.load(
+        load_from_hub("ernestumorga/ppo-Pendulum-v1", "ppo-Pendulum-v1.zip")
+    ).policy
 
 
 @pytest.fixture
