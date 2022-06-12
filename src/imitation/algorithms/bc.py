@@ -24,6 +24,7 @@ import torch as th
 import tqdm
 from stable_baselines3.common import policies, utils, vec_env
 
+
 from imitation.algorithms import base as algo_base
 from imitation.data import rollout, types
 from imitation.policies import base as policy_base
@@ -156,6 +157,21 @@ class BehaviorCloningTrainer:
 
         return training_metrics
 
+@dataclasses.dataclass(frozen=True)
+class BehaviorCloningTrainerRobo:
+    """Functor to fit a policy to expert demonstration data."""
+
+    loss: BehaviorCloningLossCalculator
+    optimizer: th.optim.Optimizer
+    policy: policies.ActorCriticPolicy
+
+    def __call__(self, batch) -> BCTrainingMetrics:
+        obs = th.as_tensor(batch["obs"], device=self.policy.device).detach()
+        acts = th.as_tensor(batch["acts"], device=self.policy.device).detach()
+        training_metrics = self.loss(self.policy, obs, acts)
+
+        return training_metrics
+
 
 def enumerate_batches(
     batch_it: Iterable[algo_base.TransitionMapping],
@@ -259,6 +275,199 @@ def reconstruct_policy(
     policy = th.load(policy_path, map_location=utils.get_device(device))
     assert isinstance(policy, policies.ActorCriticPolicy)
     return policy
+
+
+class BCRobo(algo_base.DemonstrationAlgorithm):
+    """Behavioral cloning (BC).
+
+    Recovers a policy via supervised learning from observation-action pairs.
+    """
+
+    def __init__(
+        self,
+        *,
+        observation_space: gym.Space,
+        action_space: gym.Space,
+        policy: Optional[policies.ActorCriticPolicy] = None,
+        demonstrations: Optional[algo_base.AnyTransitions] = None,
+        batch_size: int = 32,
+        optimizer_cls: Type[th.optim.Optimizer] = th.optim.Adam,
+        optimizer_kwargs: Optional[Mapping[str, Any]] = None,
+        ent_weight: float = 1e-3,
+        l2_weight: float = 0.0,
+        device: Union[str, th.device] = "auto",
+        custom_logger: Optional[imit_logger.HierarchicalLogger] = None,
+    ):
+        """Builds BC.
+
+        Args:
+            observation_space: the observation space of the environment.
+            action_space: the action space of the environment.
+            policy: a Stable Baselines3 policy; if unspecified,
+                defaults to `FeedForward32Policy`.
+            demonstrations: Demonstrations from an expert (optional). Transitions
+                expressed directly as a `types.TransitionsMinimal` object, a sequence
+                of trajectories, or an iterable of transition batches (mappings from
+                keywords to arrays containing observations, etc).
+            batch_size: The number of samples in each batch of expert data.
+            optimizer_cls: optimiser to use for supervised training.
+            optimizer_kwargs: keyword arguments, excluding learning rate and
+                weight decay, for optimiser construction.
+            ent_weight: scaling applied to the policy's entropy regularization.
+            l2_weight: scaling applied to the policy's L2 regularization.
+            device: name/identity of device to place policy on.
+            custom_logger: Where to log to; if None (default), creates a new logger.
+
+        Raises:
+            ValueError: If `weight_decay` is specified in `optimizer_kwargs` (use the
+                parameter `l2_weight` instead.)
+        """
+        self._demo_data_loader: Optional[Iterable[algo_base.TransitionMapping]] = None
+        self.batch_size = batch_size
+        super().__init__(
+            demonstrations=demonstrations,
+            custom_logger=custom_logger,
+        )
+        self._bc_logger = BCLogger(self.logger)
+
+        self.action_space = action_space
+        self.observation_space = observation_space
+
+        if policy is None:
+            policy = policy_base.FeedForward32Policy(
+                observation_space=observation_space,
+                action_space=action_space,
+                # Set lr_schedule to max value to force error if policy.optimizer
+                # is used by mistake (should use self.optimizer instead).
+                lr_schedule=lambda _: th.finfo(th.float32).max,
+            )
+        self._policy = policy.to(utils.get_device(device))
+        # TODO(adam): make policy mandatory and delete observation/action space params?
+        assert self.policy.observation_space == self.observation_space
+        assert self.policy.action_space == self.action_space
+
+        if optimizer_kwargs:
+            if "weight_decay" in optimizer_kwargs:
+                raise ValueError("Use the parameter l2_weight instead of weight_decay.")
+        optimizer_kwargs = optimizer_kwargs or {}
+        optimizer = optimizer_cls(
+            self.policy.parameters(),
+            **optimizer_kwargs,
+        )
+        loss_computer = BehaviorCloningLossCalculator(ent_weight, l2_weight)
+        self.trainer = BehaviorCloningTrainerRobo(
+            loss_computer,
+            optimizer,
+            policy,
+        )
+
+    @property
+    def policy(self) -> policies.ActorCriticPolicy:
+        return self._policy
+
+    def set_demonstrations(self, demonstrations: algo_base.AnyTransitions) -> None:
+        self._demo_data_loader = algo_base.make_data_loader(
+            demonstrations,
+            self.batch_size,
+        )
+
+    def get_loss(
+        self,
+        *,
+        n_epochs: Optional[int] = None,
+        n_batches: Optional[int] = None,
+        on_epoch_end: Optional[Callable[[], None]] = None,
+        on_batch_end: Optional[Callable[[], None]] = None,
+        log_interval: int = 500,
+        log_rollouts_venv: Optional[vec_env.VecEnv] = None,
+        log_rollouts_n_episodes: int = 5,
+        progress_bar: bool = True,
+        reset_tensorboard: bool = False,
+    ):
+        """Train with supervised learning for some number of epochs.
+
+        Here an 'epoch' is just a complete pass through the expert data loader,
+        as set by `self.set_expert_data_loader()`. Note, that when you specify
+        `n_batches` smaller than the number of batches in an epoch, the `on_epoch_end`
+        callback will never be called.
+
+        Args:
+            n_epochs: Number of complete passes made through expert data before ending
+                training. Provide exactly one of `n_epochs` and `n_batches`.
+            n_batches: Number of batches loaded from dataset before ending training.
+                Provide exactly one of `n_epochs` and `n_batches`.
+            on_epoch_end: Optional callback with no parameters to run at the end of each
+                epoch.
+            on_batch_end: Optional callback with no parameters to run at the end of each
+                batch.
+            log_interval: Log stats after every log_interval batches.
+            log_rollouts_venv: If not None, then this VecEnv (whose observation and
+                actions spaces must match `self.observation_space` and
+                `self.action_space`) is used to generate rollout stats, including
+                average return and average episode length. If None, then no rollouts
+                are generated.
+            log_rollouts_n_episodes: Number of rollouts to generate when calculating
+                rollout stats. Non-positive number disables rollouts.
+            progress_bar: If True, then show a progress bar during training.
+            reset_tensorboard: If True, then start plotting to Tensorboard from x=0
+                even if `.train()` logged to Tensorboard previously. Has no practical
+                effect if `.train()` is being called for the first time.
+        """
+        if reset_tensorboard:
+            self._bc_logger.reset_tensorboard_steps()
+        self._bc_logger.log_epoch(0)
+
+        compute_rollout_stats = RolloutStatsComputer(
+            log_rollouts_venv,
+            log_rollouts_n_episodes,
+        )
+
+        def _on_epoch_end(epoch_number: int):
+            if tqdm_progress_bar is not None:
+                total_num_epochs_str = f"of {n_epochs}" if n_epochs is not None else ""
+                tqdm_progress_bar.display(
+                    f"Epoch {epoch_number} {total_num_epochs_str}",
+                    pos=1,
+                )
+            self._bc_logger.log_epoch(epoch_number + 1)
+            if on_epoch_end is not None:
+                on_epoch_end()
+
+        demonstration_batches = BatchIteratorWithEpochEndCallback(
+            self._demo_data_loader,
+            n_epochs,
+            n_batches,
+            _on_epoch_end,
+        )
+        batches_with_stats = enumerate_batches(demonstration_batches)
+        tqdm_progress_bar: Optional[tqdm.tqdm] = None
+        
+        if progress_bar:
+            batches_with_stats = tqdm.tqdm(
+                batches_with_stats,
+                unit="batch",
+                total=n_batches,
+            )
+            tqdm_progress_bar = batches_with_stats
+        
+
+        total_loss = 0
+        for (batch_num, batch_size, num_samples_so_far), batch in batches_with_stats:
+            loss = self.trainer(batch)
+            total_loss += loss.loss
+
+            if on_batch_end is not None:
+                on_batch_end()
+
+        return(total_loss)
+
+    def save_policy(self, policy_path: types.AnyPath) -> None:
+        """Save policy to a path. Can be reloaded by `.reconstruct_policy()`.
+
+        Args:
+            policy_path: path to save policy to.
+        """
+        th.save(self.policy, policy_path)
 
 
 class BC(algo_base.DemonstrationAlgorithm):
