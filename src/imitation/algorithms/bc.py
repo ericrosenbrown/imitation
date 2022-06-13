@@ -381,7 +381,7 @@ class BCRobo(algo_base.DemonstrationAlgorithm):
         log_interval: int = 500,
         log_rollouts_venv: Optional[vec_env.VecEnv] = None,
         log_rollouts_n_episodes: int = 5,
-        progress_bar: bool = True,
+        progress_bar: bool = False,
         reset_tensorboard: bool = False,
     ):
         """Train with supervised learning for some number of epochs.
